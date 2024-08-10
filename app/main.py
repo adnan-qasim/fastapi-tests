@@ -1,48 +1,51 @@
-"""
- Contact me:
-   e-mail:   enrique@enriquecatala.com 
-   Linkedin: https://www.linkedin.com/in/enriquecatala/
-   Web:      https://enriquecatala.com
-   Twitter:  https://twitter.com/enriquecatala
-   Support:  https://github.com/sponsors/enriquecatala
-   Youtube:  https://www.youtube.com/enriquecatala
-   
-"""
-from os import environ
 import json
 from typing import Optional
-from loguru import logger
-
 from fastapi import FastAPI
+import consul , socket
 
 app = FastAPI()
 
 
-@app.get("/one/hello")
+@app.get("/hello")
 def read_root():
-    if "HELLOWORLD_ENV" in environ:
-        txt = environ.get('HELLOWORLD_ENV')
-    else:
-        txt = "HELLOWORLD_ENV not found!"
-    return {"HELLOWORLD_ENV: {}".format(txt): "from /one/hello"}
+    return {"message":"hello world"}
 
-
-@app.get("/get_api_key")
-def read_api_key():
-    api_key = ""    
-    
+def get_ip_address():
+    # Fetching IP address by creating a UDP connection to a public server (Google DNS)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        with open('/app/secrets/appconfig.conf') as f:
-            js = json.load(f)
-            api_key = js["api_key"]
-            # Do something with the file
+        s.connect(("8.8.8.8", 80))
+        ip_address = s.getsockname()[0]
+    except Exception:
+        ip_address = requests.get('https://api.ipify.org').text  
+        s.close()
+    return ip_address
 
-    except IOError:
-        logger.exception(e)
-        print("/app/secrets/appconfig.conf not accessible")
 
-    return {"API_KEY: {}".format(api_key)}
+@app.on_event("startup")
+async def register_with_consul():
+    client = consul.Consul(host='localhost', port=8500)
+    service_id = "my-fastapi-service"
+    ip_address = get_ip_address()
+    client.agent.service.register(
+        name="fastapi-service",
+        service_id=service_id,
+        address=ip_address,
+        port=8000,
+        tags=["fastapi", "python"],
+        check=consul.Check.http("http://127.0.0.1:8000/health", interval="10s")
+    )
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Optional[str] = None):
-    return {"item_id": item_id, "q": q}
+
+@app.on_event("shutdown")
+async def deregister_from_consul():
+    client = consul.Consul(host='localhost', port=8500)
+    service_id = "my-fastapi-service"
+    client.agent.service.deregister(service_id)
+
+@app.get("/")
+async def read_root():
+    return {"Hello": "World"}
